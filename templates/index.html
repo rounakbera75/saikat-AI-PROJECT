@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RCB AI | Paraphrasing, Q&A, and Summarization</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body>
+    <div id="api-key-warning" class="api-warning">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <span><strong>API Key Required:</strong> To use rcb AI, please enter your Gemini API Key in the top right. <a href="https://aistudio.google.com/app/apikey" target="_blank">Get a free key here.</a></span>
+        <button onclick="this.parentElement.style.display='none'"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="background-effects">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="particles-container" id="particles-js"></div>
+    </div>
+
+    <header class="app-header">
+        <div class="logo">
+            <div class="rcb-logo"><img src="{{ url_for('static', filename='rcb_logo.png') }}" alt="RCB AI Logo"></div>
+            <h1>RCB <span class="highlight">AI</span></h1>
+        </div>
+        <div class="header-actions">
+            <div class="engine-status" id="engine-status">
+                <i class="fa-solid fa-circle-nodes"></i> <span id="engine-text">Scanning AI...</span>
+            </div>
+            <div class="api-key-container">
+                <input type="password" id="api-key-input" placeholder="Gemini API Key...">
+                <button id="save-key-btn" title="Save Key"><i class="fa-solid fa-key"></i></button>
+            </div>
+            <button id="history-toggle" class="icon-btn"><i class="fa-solid fa-clock-rotate-left"></i></button>
+        </div>
+    </header>
+
+    <div id="history-sidebar" class="sidebar closed">
+        <div class="sidebar-header">
+            <h3>History</h3>
+            <button id="close-history"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div id="history-list" class="history-list">
+            <div class="empty-history">No history yet</div>
+        </div>
+    </div>
+
+    <main class="chat-container">
+        <div id="chat-history" class="chat-history">
+            <div class="welcome-message">
+                <div class="large-logo"><img src="{{ url_for('static', filename='rcb_logo.png') }}" alt="RCB AI Logo Large"></div>
+                <h2>How can <span class="gold-text">RCB AI</span> help you today?</h2>
+                <p>Upload a PDF or paste text to summarize, check grammar, or generate Q&A.</p>
+            </div>
+        </div>
+
+        <div class="chat-input-wrapper">
+            <div class="tool-selector-pills">
+                <button class="pill active" data-mode="paraphrase">Paraphrase</button>
+                <button class="pill" data-mode="grammar">Grammar</button>
+                <button class="pill" data-mode="summarize">Summarize</button>
+                <button class="pill" data-mode="qa">Q&A</button>
+                <button class="pill" data-mode="gen_qa">Gen Q&A</button>
+            </div>
+            
+            <div class="input-area">
+                <label for="pdf-upload" class="attach-btn" title="Upload PDF">
+                    <i class="fa-solid fa-paperclip"></i>
+                    <input type="file" id="pdf-upload" accept=".pdf" hidden>
+                </label>
+                <textarea id="user-input" placeholder="Type your text or question here..." rows="1"></textarea>
+                <button id="send-btn" class="send-btn">
+                    <i class="fa-solid fa-arrow-up"></i>
+                </button>
+            </div>
+            
+            <div class="input-footer">
+                <span id="char-count">0 characters</span>
+                <button id="download-pdf-btn" class="pdf-btn hidden"><i class="fa-solid fa-file-pdf"></i> Download Last Result</button>
+            </div>
+        </div>
+    </main>
+
+    <div id="loading-overlay" class="hidden">
+        <div class="spinner"></div>
+        <p>rcb AI is thinking...</p>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
