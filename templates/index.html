@@ -7,12 +7,14 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.2.0/github-markdown.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
     <div id="api-key-warning" class="api-warning">
         <i class="fa-solid fa-triangle-exclamation"></i>
-        <span><strong>API Key Required:</strong> To use rcb AI, please enter your Gemini API Key in the top right. <a href="https://aistudio.google.com/app/apikey" target="_blank">Get a free key here.</a></span>
+        <span><strong>API Key Required:</strong> To use RCB AI, please enter your OpenRouter API Key in the top right. <a href="https://openrouter.ai/keys" target="_blank">Get a free key here.</a></span>
         <button onclick="this.parentElement.style.display='none'"><i class="fa-solid fa-xmark"></i></button>
     </div>
     <div class="background-effects">
@@ -31,7 +33,7 @@
                 <i class="fa-solid fa-circle-nodes"></i> <span id="engine-text">Scanning AI...</span>
             </div>
             <div class="api-key-container">
-                <input type="password" id="api-key-input" placeholder="Gemini API Key...">
+                <input type="password" id="api-key-input" placeholder="OpenRouter API Key...">
                 <button id="save-key-btn" title="Save Key"><i class="fa-solid fa-key"></i></button>
             </div>
             <button id="history-toggle" class="icon-btn"><i class="fa-solid fa-clock-rotate-left"></i></button>

@@ -1,16 +1,15 @@
 import os
 import traceback
 import requests
-from flask import Flask, render_template, request, jsonify
+import json
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
-from google import genai
-from google.genai import types
 from openai import OpenAI
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
 from pypdf import PdfReader
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception, retry_if_result
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 import io
 
 # Load environment variables
@@ -24,53 +23,23 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 # --- AI Configuration ---
 ACADEMIC_SYSTEM_INSTRUCTION = """You are RCB AI, a Senior Academic Research Assistant. Your goal is to provide high-level, scholarly, and professional responses. 
 Always use formal academic language, avoid slang, and prioritize clarity, analytical depth, and accuracy. 
-When summarizing, capture all theoretical and practical nuances. 
-When answering questions, provide comprehensive and well structured responses as if writing for an academic journal or thesis project."""
+When summarizing, focus on core arguments and scholarly implications, maintaining concision while preserving nuance. 
+When answering questions, provide well-structured, authoritative responses that adhere to the highest research standards."""
 
-LM_STUDIO_URL = "http://localhost:1234/v1"
-
-def check_lm_studio():
-    """Checks if LM Studio is running on the local port."""
-    try:
-        # Standard LM Studio /models check
-        response = requests.get(f"{LM_STUDIO_URL}/models", timeout=0.8)
-        return response.status_code == 200
-    except:
-        return False
+# List of Free OpenRouter models to try (Fallback mechanism)
+FREE_MODELS = [
+    "openrouter/free",
+    "google/gemini-2.0-flash-lite-preview-02-05:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-72b-instruct:free",
+    "google/gemma-3-4b-it:free",
+    "meta-llama/llama-3.2-3b-instruct:free"
+]
 
 def is_retryable_exception(exception):
-    """Determines if the exception is due to a rate limit (429) or busy server (503)."""
+    """Determines if the exception is due to a rate limit or busy server."""
     err_msg = str(exception).lower()
-    return any(x in err_msg for x in ["429", "resource_exhausted", "quota", "503", "unavailable"])
-
-# Retry decorator: Wait exponentially up to 3 attempts for transient external API issues
-@retry(
-    retry=retry_if_exception(is_retryable_exception),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    reraise=True
-)
-def generate_with_gemini(client, model_id, contents, config):
-    print(f"[DEBUG] Gemini Attempt: {model_id}")
-    return client.models.generate_content(
-        model=model_id,
-        contents=contents,
-        config=config
-    )
-
-def generate_with_lm_studio(prompt, system_instruction):
-    """Generates content using the local LM Studio server."""
-    client = OpenAI(base_url=LM_STUDIO_URL, api_key="lm-studio")
-    print(f"[DEBUG] LM Studio Attempt")
-    response = client.chat.completions.create(
-        model="local-model", # LM Studio accepts any model name if only one is loaded
-        messages=[
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.7
-    )
-    return response.choices[0].message.content
+    return any(x in err_msg for x in ["429", "resource_exhausted", "quota", "503", "unavailable", "busy"])
 
 def calculate_similarity(text1, text2):
     """Calculates cosine similarity between two texts using TF-IDF."""
@@ -102,77 +71,100 @@ def paraphrase():
         return jsonify({'error': 'No text provided'}), 400
 
     # API Keys from env/client
-    gemini_key = os.getenv('GEMINI_API_KEY')
-    actual_key = client_api_key if (client_api_key and len(client_api_key) > 30) else gemini_key
+    openrouter_key = (os.getenv('OPENROUTER_API_KEY') or "").strip()
+    actual_key = (client_api_key or "").strip() if (client_api_key and len(client_api_key.strip()) > 30) else openrouter_key
+
+    if not actual_key or any(x in actual_key for x in ["YOUR_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"]):
+         return jsonify({'error': 'OpenRouter API Key missing or invalid. Please provide a valid key.'}), 401
 
     # Prompt Prep
     if mode == 'summarize':
-        prompt = f"Perform a comprehensive academic summary of this text. Tone: {tone}. Focus on key findings and scholarly implications.\n\nText: {original_text}"
+        prompt = f"Perform a concise yet scholarly academic summary. Focus on the core thesis, key findings, and scholarly implications. Tone: {tone}.\n\nText: {original_text}"
     elif mode == 'grammar':
-        prompt = f"Refine the following text for publication in an academic journal. Tone: {tone}. Correct errors and enhance scholarly tone.\n\nText: {original_text}"
+        prompt = f"Refine the following text for academic publication. Correct errors and enhance the scholarly tone for an international journal. Tone: {tone}.\n\nText: {original_text}"
     elif mode == 'qa':
-        prompt = f"As a research expert, provide an academically structured answer to: {data.get('question','')}\n\nBased on this source context: {original_text}"
+        prompt = f"As a research expert, provide a structured, authoritative answer to: {data.get('question','')}\n\nBased on this context: {original_text}"
     elif mode == 'gen_qa':
-        prompt = f"From an academic review perspective, generate 5-10 analytical questions and their detailed scholarly answers from: {original_text}"
+        prompt = f"From an academic review perspective, generate 5-10 high-level analytical research questions and their detailed scholarly answers from: {original_text}"
     else:
-        prompt = f"Paraphrase this text for a research paper. Maintain perfect academic integrity. Tone: {tone}.\n\nText: {original_text}"
+        prompt = f"Paraphrase this text for a research paper. Maintain perfect academic integrity while completely reshaping the syntax. Tone: {tone}.\n\nText: {original_text}"
 
-    ai_source = "local"
-    try:
-        # 1. TRY LM STUDIO (LOCAL) FIRST
-        if check_lm_studio():
-            print(">>> Using LM Studio (Local Engine)")
-            paraphrased_text = generate_with_lm_studio(prompt, ACADEMIC_SYSTEM_INSTRUCTION)
+    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=actual_key)
+
+    def generate():
+        full_response = ""
+        ai_source = "openrouter"
         
-        # 2. FALLBACK TO GEMINI (CLOUD)
-        elif actual_key and len(actual_key) > 30 and "YOUR_API_KEY" not in actual_key:
-            print(">>> LM Studio offline. Falling back to Gemini API (Cloud Engine)")
-            ai_source = "cloud"
-            client = genai.Client(api_key=actual_key)
-            config = types.GenerateContentConfig(system_instruction=ACADEMIC_SYSTEM_INSTRUCTION)
+        # Try models in order
+        for model in FREE_MODELS:
             try:
-                # Primary Cloud Attempt
-                response = generate_with_gemini(client, 'gemini-2.0-flash', prompt, config)
+                print(f"[DEBUG] Streaming Attempt: {model}")
+                messages = [
+                    {"role": "system", "content": ACADEMIC_SYSTEM_INSTRUCTION},
+                    {"role": "user", "content": prompt}
+                ]
+                
+                # First attempt with system message
+                try:
+                    stream = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        extra_headers={
+                            "HTTP-Referer": "https://rcb-ai.academic-assistant", 
+                            "X-Title": "RCB AI Academic Assistant",
+                        },
+                        temperature=0.7,
+                        stream=True
+                    )
+                    
+                    found_content = False
+                    for chunk in stream:
+                        if chunk.choices[0].delta.content:
+                            found_content = True
+                            content = chunk.choices[0].delta.content
+                            full_response += content
+                            yield f"data: {json.dumps({'content': content})}\n\n"
+                    
+                    if found_content:
+                        break # Success!
+                        
+                except Exception as e:
+                    err_msg = str(e)
+                    if "Developer instruction is not enabled" in err_msg or "system" in err_msg.lower():
+                         print(f"[INFO] Model {model} does not support system role. Retrying with combined prompt...")
+                         combined_prompt = f"{ACADEMIC_SYSTEM_INSTRUCTION}\n\nUSER REQUEST: {prompt}"
+                         stream = client.chat.completions.create(
+                            model=model,
+                            messages=[{"role": "user", "content": combined_prompt}],
+                            extra_headers={
+                                "HTTP-Referer": "https://rcb-ai.academic-assistant", 
+                                "X-Title": "RCB AI Academic Assistant",
+                            },
+                            temperature=0.7,
+                            stream=True
+                        )
+                         for chunk in stream:
+                            if chunk.choices[0].delta.content:
+                                content = chunk.choices[0].delta.content
+                                full_response += content
+                                yield f"data: {json.dumps({'content': content})}\n\n"
+                         break # Success on fallback
+                    else:
+                        raise e
+
             except Exception as e:
-                traceback.print_exc()
-                if is_retryable_exception(e) or "404" in str(e):
-                    # Final Cloud Fallback
-                    response = generate_with_gemini(client, 'gemini-flash-latest', prompt, config)
-                else: 
-                    raise e
-            paraphrased_text = response.text.replace('*', '').strip()
-        
+                print(f"[ERROR] Model {model} failed: {str(e)}")
+                continue
+
+        if not full_response:
+             yield f"data: {json.dumps({'error': 'All models failed. Please wait 30s and try again.'})}\n\n"
         else:
-            # 3. DEMO MODE
-            ai_source = "demo"
-            paraphrased_text = f"**[Demo Mode]** LM Studio is offline and no Gemini Key was found. Here is a simulated response.\n\nOriginal Text: {original_text}"
+             # Final metadata event
+             similarity = calculate_similarity(original_text, full_response)
+             plagiarism_score = (similarity * 100) if similarity < 1.0 else 98.4
+             yield f"data: {json.dumps({'meta': True, 'engine': ai_source, 'similarity': round(plagiarism_score, 2)})}\n\n"
 
-        # Post-Process Result
-        similarity = calculate_similarity(original_text, paraphrased_text)
-        plagiarism_score = (similarity * 100) if similarity < 1.0 else 98.4
-
-        return jsonify({
-            'original': original_text,
-            'paraphrased': paraphrased_text,
-            'similarity_score': round(plagiarism_score, 2),
-            'status': 'success',
-            'engine': ai_source
-        })
-
-    except Exception as e:
-        error_msg = str(e)
-        print(f"Hybrid AI Error: {error_msg}")
-        
-        if "404" in error_msg:
-            friendly_error = "Model not found. The API version or model requested may be temporarily unavailable."
-        elif "429" in error_msg or "resource_exhausted" in error_msg.lower():
-            friendly_error = "Free Tier Limit: Both engines are busy. Please wait 30s and try again."
-        elif "503" in error_msg:
-            friendly_error = "Service Unavailable: The AI server is experiencing high demand. Retrying locally..."
-        else:
-            friendly_error = f"Academic processing failed: {error_msg}"
-            
-        return jsonify({'error': friendly_error}), 500
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 @app.route('/api/extract-pdf', methods=['POST'])
 def extract_pdf():
@@ -185,10 +177,12 @@ def extract_pdf():
             reader = PdfReader(io.BytesIO(file.read()))
             text = ""
             for page in reader.pages:
-                text += page.extract_text() + "\n"
+                extracted = page.extract_text()
+                if extracted:
+                    text += extracted + "\n"
             return jsonify({'text': text.strip()})
         except Exception as e:
-            return jsonify({'error': 'PDF extraction failed'}), 500
+            return jsonify({'error': f'PDF extraction failed: {str(e)}'}), 500
     return jsonify({'error': 'Invalid file type'}), 400
 
 if __name__ == '__main__':

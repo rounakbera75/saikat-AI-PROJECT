@@ -64,11 +64,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (welcome) welcome.remove();
 
         const msgDiv = document.createElement('div');
-        msgDiv.className = `message ${sender === 'user' ? 'user-message' : 'ai-message'}`;
+        msgDiv.className = `message ${sender === 'user' ? 'user-message' : 'ai-message markdown-body'}`;
         
         msgDiv.innerHTML = `
             <span class="sender">${sender === 'user' ? 'You' : 'RCB AI'}</span>
-            <div class="bubble">${text}</div>
+            <div class="bubble">${sender === 'ai' ? marked.parse(text) : text}</div>
             ${sender === 'ai' ? `
                 <div class="message-actions">
                     <button class="msg-action-btn copy-msg"><i class="fa-regular fa-copy"></i> Copy</button>
@@ -88,10 +88,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 setTimeout(() => btn.innerHTML = '<i class="fa-regular fa-copy"></i> Copy', 2000);
             });
             msgDiv.querySelector('.download-msg').addEventListener('click', () => {
-                lastAiResponse = text;
                 downloadLastResultAsPdf();
             });
         }
+        return msgDiv;
     }
 
     async function handleSend() {
@@ -112,6 +112,10 @@ document.addEventListener('DOMContentLoaded', () => {
         chatHistory.appendChild(typingDiv);
         chatHistory.scrollTop = chatHistory.scrollHeight;
 
+        let aiMsgDiv = null;
+        let aiBubble = null;
+        let fullContent = "";
+
         try {
             const apiKey = apiKeyInput.value.trim();
             const response = await fetch('/api/paraphrase', {
@@ -125,37 +129,65 @@ document.addEventListener('DOMContentLoaded', () => {
                 })
             });
 
-            const data = await response.json();
-            if (typingDiv) typingDiv.remove(); // Remove typing indicator
-            
-            // --- Update Engine Status UI ---
-            const engineStatus = document.getElementById('engine-status');
-            const engineText = document.getElementById('engine-text');
-            if (data.engine) {
-                engineStatus.className = `engine-status ${data.engine}`;
-                engineText.textContent = data.engine === 'local' ? 'Local Engine' : 
-                                       data.engine === 'cloud' ? 'Cloud Engine' : 'Demo Mode';
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Server error');
             }
 
-            if (response.status === 401) {
-                appendMessage('ai', (data.error || "Authentication failed") + "\n\n(Please enter your API Key in the top right to enable live responses)");
-            } else if (response.status === 429 || (data.error && data.error.includes("Quota Busy"))) {
-                appendMessage('ai', "⚠️ **AI Overloaded:** " + data.error + "\n\n(We tried to retry automatically, but the free tier limit is still active. Please wait about 30 seconds and try again.)");
-            } else if (!response.ok) {
-                throw new Error(data.error || 'Server error');
-            } else {
-                appendMessage('ai', data.paraphrased);
-                lastAiResponse = data.paraphrased;
-                lastUserQuery = query;
-                downloadPdfBtn.classList.remove('hidden');
-                saveToHistory(query, data.paraphrased, currentMode);
+            if (typingDiv) typingDiv.remove();
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split("\n\n");
+
+                for (const line of lines) {
+                    if (line.startsWith("data: ")) {
+                        const data = JSON.parse(line.substring(6));
+
+                        if (data.error) {
+                            throw new Error(data.error);
+                        }
+
+                        if (data.content) {
+                            if (!aiMsgDiv) {
+                                aiMsgDiv = appendMessage('ai', '');
+                                aiBubble = aiMsgDiv.querySelector('.bubble');
+                                loadingOverlay.classList.add('hidden');
+                            }
+                            fullContent += data.content;
+                            aiBubble.innerHTML = marked.parse(fullContent);
+                            chatHistory.scrollTop = chatHistory.scrollHeight;
+                        }
+
+                        if (data.meta) {
+                            const engineStatus = document.getElementById('engine-status');
+                            const engineText = document.getElementById('engine-text');
+                            engineStatus.className = `engine-status ${data.engine}`;
+                            engineText.textContent = data.engine === 'openrouter' ? 'OpenRouter AI' : 'Demo Mode';
+                            
+                            lastAiResponse = fullContent;
+                            lastUserQuery = query;
+                            downloadPdfBtn.classList.remove('hidden');
+                            saveToHistory(query, fullContent, currentMode);
+                        }
+                    }
+                }
             }
 
         } catch (error) {
-            if(typingDiv) typingDiv.remove();
-            appendMessage('ai', `Error: ${error.message}\n\n(Note: Please ensure you have entered a valid Gemini API Key in the top right banner)`);
-        } finally {
+            if (typingDiv) typingDiv.remove();
             loadingOverlay.classList.add('hidden');
+            const errMsg = error.message.includes("OpenRouter API Key missing") 
+                ? `${error.message}\n\n(Please enter your API Key in the top right to enable live responses)`
+                : `Error: ${error.message}`;
+            appendMessage('ai', errMsg);
+        } finally {
             extractedPdfText = ''; 
         }
     }
@@ -223,7 +255,8 @@ document.addEventListener('DOMContentLoaded', () => {
         doc.setFont("helvetica", "bold"); doc.setFontSize(11);
         doc.text("AI RESPONSE:", 20, yPos);
         doc.setFont("helvetica", "normal"); doc.setFontSize(10);
-        const rLines = doc.splitTextToSize(lastAiResponse, 170);
+        const cleanContent = lastAiResponse.replace(/[#*`]/g, ''); // Crude markdown cleaning for PDF
+        const rLines = doc.splitTextToSize(cleanContent, 170);
         doc.text(rLines, 20, yPos + 7);
 
         doc.save(`rcbAI_${Date.now()}.pdf`);
@@ -231,8 +264,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function saveApiKey() {
         const key = apiKeyInput.value.trim();
-        if (key) {
-            localStorage.setItem('gemini_api_key', key);
+        if (key && key.length > 30) {
+            localStorage.setItem('openrouter_api_key', key);
             saveKeyBtn.innerHTML = '<i class="fa-solid fa-check"></i>';
             const warning = document.getElementById('api-key-warning');
             if (warning) warning.style.display = 'none';
@@ -241,9 +274,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function loadApiKey() {
-        const key = localStorage.getItem('gemini_api_key');
-        if (key) {
+        const key = localStorage.getItem('openrouter_api_key');
+        if (!key) {
+            // Check for legacy gemini key (Migration)
+            const oldKey = localStorage.getItem('gemini_api_key');
+            if (oldKey) {
+                localStorage.setItem('openrouter_api_key', oldKey);
+                apiKeyInput.value = oldKey;
+                localStorage.removeItem('gemini_api_key');
+            }
+        } else {
             apiKeyInput.value = key;
+        }
+
+        // Hide warning if key exists
+        if (apiKeyInput.value) {
             const warning = document.getElementById('api-key-warning');
             if (warning) warning.style.display = 'none';
         }
